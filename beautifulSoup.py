@@ -23,6 +23,7 @@ sample_html = """
 
 # --- 1. Parsing HTML with BeautifulSoup ---
 # Create a BeautifulSoup object to parse the sample HTML
+# sample_html=requests.get('https://www.ambitionbox.com/list-of-companies?page=1').text
 soup = BeautifulSoup(sample_html, 'html.parser')  # 'html.parser' is the default parser
 
 # --- 2. Navigating the Parse Tree ---
