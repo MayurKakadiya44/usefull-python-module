@@ -49,8 +49,8 @@ from setuptools import setup, find_packages
 setup(
     name="my-package",
     version="1.0.0",
-    author="John Doe",
-    author_email="john@example.com",
+    author="MayurKakadiya",
+    author_email="kakadiya.mayur44@gmail.com",
     description="A sample Python package for demonstration",
     long_description=open('README.md').read() if os.path.exists('README.md') else "A simple package",
     long_description_content_type="text/markdown",
