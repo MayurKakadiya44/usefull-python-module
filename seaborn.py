@@ -13,6 +13,7 @@
 # - Supports advanced visualizations like pair plots, facet grids, and regression plots.
 # - Enhances Matplotlib plots with less code and better defaults.
 # - Requires installation: `pip install seaborn`
+# - Seaborn has a total of 22 built-in datasets available for use, which are commonly used for practicing data visualization and analysis tasks
 
 # Import required libraries
 import seaborn as sns
