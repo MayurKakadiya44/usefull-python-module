@@ -1,0 +1,90 @@
+pipeline {
+    agent any
+
+    environment {
+        // Define Python version and paths if needed
+        PYTHON_VERSION = '3.10'
+        // Jenkins credentials ID for SSH or other secrets
+        SSH_CREDENTIALS_ID = 'your-ssh-credentials-id'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                // Checkout source code from SCM
+                checkout scm
+            }
+        }
+
+        stage('Code Scanning') {
+            steps {
+                // Example: Run a static code analysis tool like Bandit or SonarQube scanner
+                // Replace with your preferred code scanning tool
+                echo 'Running code scanning...'
+                sh 'pip install bandit'
+                sh 'bandit -r .'
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                echo 'Running unit tests...'
+                sh '''
+                    python -m pip install --upgrade pip
+                    pip install -r requirements.txt
+                    pip install pytest
+                    pytest tests/unit --junitxml=unit-test-results.xml
+                '''
+                // Publish JUnit test results to Jenkins UI
+                junit 'unit-test-results.xml'
+            }
+        }
+
+        stage('Integration Tests') {
+            steps {
+                echo 'Running integration tests...'
+                sh '''
+                    pip install pytest
+                    pytest tests/integration --junitxml=integration-test-results.xml
+                '''
+                junit 'integration-test-results.xml'
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo 'Building executable with PyInstaller...'
+                sh '''
+                    pip install pyinstaller
+                    pyinstaller --onefile your_main_script.py
+                '''
+                archiveArtifacts artifacts: 'dist/**', fingerprint: true
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                echo 'Deploying executable to remote Windows server...'
+                // Use SSH agent with stored credentials to securely copy and set permissions
+                sshagent([env.SSH_CREDENTIALS_ID]) {
+                    // Replace these with your server details and paths
+                    sh '''
+                        scp dist/your_main_script.exe your_user@your.deploy.server.com:/path/to/deploy/
+                        ssh your_user@your.deploy.server.com "chmod +x /path/to/deploy/your_main_script.exe"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Build, test, and deployment succeeded!'
+            // Optionally notify Jira or other tools here
+        }
+        failure {
+            echo 'Build or tests failed.'
+            // Optionally create or update Jira issues via Jenkins plugins or API calls
+        }
+    }
+}
