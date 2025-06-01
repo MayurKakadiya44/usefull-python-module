@@ -1,0 +1,85 @@
+stages:
+  - code_scanning
+  - test
+  - build
+  - deploy
+
+variables:
+  # Adjust Python version as needed
+  PYTHON_VERSION: "3.10"
+
+# Code scanning using GitLab’s CodeQL integration
+code_scanning:
+  image: github/codeql-action:latest
+  stage: code_scanning
+  script:
+    - echo "Starting CodeQL code scanning..."
+    # You can customize CodeQL scanning here or use GitLab's built-in security scanning features
+  only:
+    - main
+    - merge_requests
+
+unit_tests:
+  image: python:${PYTHON_VERSION}
+  stage: test
+  script:
+    - python -m pip install --upgrade pip
+    - pip install -r requirements.txt
+    - pip install flake8 pytest
+    - flake8 .
+    - pytest tests/unit --junitxml=unit-test-results.xml
+  artifacts:
+    when: always
+    reports:
+      junit: unit-test-results.xml
+  only:
+    - main
+    - merge_requests
+
+integration_tests:
+  image: python:${PYTHON_VERSION}
+  stage: test
+  script:
+    - python -m pip install --upgrade pip
+    - pip install -r requirements.txt
+    - pip install pytest
+    - pytest tests/integration --junitxml=integration-test-results.xml
+  artifacts:
+    when: always
+    reports:
+      junit: integration-test-results.xml
+  only:
+    - main
+    - merge_requests
+
+build:
+  image: python:${PYTHON_VERSION}
+  stage: build
+  script:
+    - python -m pip install --upgrade pip
+    - pip install -r requirements.txt
+    - pip install pyinstaller
+    - pyinstaller --onefile your_main_script.py
+  artifacts:
+    paths:
+      - dist/
+  only:
+    - main
+
+deploy:
+  stage: deploy
+  image: alpine:latest
+  dependencies:
+    - build
+  before_script:
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh
+    # Add your SSH private key as a GitLab CI/CD secret variable named SSH_PRIVATE_KEY
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H your.deploy.server.com >> ~/.ssh/known_hosts
+  script:
+    - scp dist/your_main_script your_user@your.deploy.server.com:/path/to/deploy/
+    - ssh your_user@your.deploy.server.com "chmod +x /path/to/deploy/your_main_script"
+  only:
+    - main
