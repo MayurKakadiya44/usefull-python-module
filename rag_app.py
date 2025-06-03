@@ -24,8 +24,8 @@ chunked_documents = text_splitter.create_documents([documents])
 
 # Initialize embeddings (replace with OllamaEmbeddings for local models)
 embeddings = OpenAIEmbeddings(openai_api_key="your-openai-api-key")  # Set your API key
-# Create embeddings with Ollama
 # embeddings = OllamaEmbeddings(model="llama3")
+# embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 # Create a FAISS vector store from the chunked documents
 vector_store = FAISS.from_documents(chunked_documents, embeddings)
