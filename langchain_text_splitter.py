@@ -38,16 +38,37 @@ for i, doc in enumerate(documents):
 
 Output :
 
+Number of chunks: 3
+
+Chunks:
+Chunk 1 (Start Index: 0):
+Introduction
+This is a sample document about artificial intelligence. It explores the basics of AI and its applications.
+--------------------------------------------------
+Chunk 2 (Start Index: 104):
+What is AI?
+Artificial Intelligence (AI) refers to the simulation of human intelligence in machines. Machines are programmed to think and learn like humans, performing tasks such as problem-solving, decision-making, and pattern recognition.
+--------------------------------------------------
+Chunk 3 (Start Index: 302):
+Applications of AI
+AI is used in various fields:
+- Healthcare: AI helps in diagnosing diseases and personalizing treatments.
+- Finance: AI detects fraud and automates trading.
+- Autonomous Vehicles: AI enables self-driving cars to navigate roads safely.
+
+Conclusion
+AI is transforming industries and will continue to evolve, bringing new opportunities and challenges.
+--------------------------------------------------
+
+Documents (with metadata):
 Document 1:
 Content: Introduction
 This is a sample document about artificial intelligence. It explores the basics of AI and its applications.
-Start Index: 0
 Metadata: {'start_index': 0}
 
 Document 2:
 Content: What is AI?
 Artificial Intelligence (AI) refers to the simulation of human intelligence in machines. Machines are programmed to think and learn like humans, performing tasks such as problem-solving, decision-making, and pattern recognition.
-Start Index: 104
 Metadata: {'start_index': 104}
 
 Document 3:
@@ -59,5 +80,4 @@ AI is used in various fields:
 
 Conclusion
 AI is transforming industries and will continue to evolve, bringing new opportunities and challenges.
-Start Index: 302
 Metadata: {'start_index': 302}
