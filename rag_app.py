@@ -1,6 +1,7 @@
 
 from langchain.document_loaders import PyPDFDirectoryLoader
 from langchain.vectorstores import FAISS
+from langchain.vectorstores import Chroma
 from langchain.embeddings import OpenAIEmbeddings  # Or use OllamaEmbeddings
 from langchain.chat_models import ChatOpenAI
 from langchain.chains import RetrievalQA
@@ -29,6 +30,14 @@ embeddings = OpenAIEmbeddings(openai_api_key="your-openai-api-key")  # Set your 
 
 # Create a FAISS vector store from the chunked documents
 vector_store = FAISS.from_documents(chunked_documents, embeddings)
+# Initialize Chroma vector store
+# vector_store = Chroma.from_texts(
+#    texts=chunks,
+#    embedding=embedding_model,
+#    ids=ids,
+#    metadatas=metadatas,
+#    persist_directory="./chroma_db"
+#)
 
 # Initialize the LLM (e.g., OpenAI with temperature=0.5 from your earlier question)
 llm = ChatOpenAI(model_name="gpt-4", temperature=0.5, openai_api_key="your-openai-api-key")
