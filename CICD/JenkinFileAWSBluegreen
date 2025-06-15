@@ -1,0 +1,88 @@
+# Use Case: A pipeline that builds a Java application, uploads artifacts to AWS S3, and performs a blue-green deployment to an AWS Elastic Beanstalk environment. 
+# It uses an AWS EC2 agent for builds and integrates with AWS credentials.
+
+Features:
+AWS Integration: Uses the Pipeline: AWS Steps Plugin (withAWS) for S3 uploads and Elastic Beanstalk operations.
+Blue-Green Deployment: Creates a new Elastic Beanstalk environment, swaps CNAMEs, and terminates the old environment for zero-downtime deployment.
+EC2 Agent: Runs on an AWS EC2 instance provisioned via the Amazon EC2 Plugin.
+Artifact Management: Archives build artifacts and uploads them to S3.
+Conditional Logic: Deploys only on the main branch using when.
+Script Block: Uses a script block for complex AWS CLI commands within a Declarative pipeline.
+
+Use Case: Ideal for Java applications deployed to AWS with zero-downtime requirements.
+
+
+
+pipeline {
+    agent none
+    environment {
+        AWS_REGION = 'us-east-1'
+        S3_BUCKET = 'my-app-artifacts'
+        EB_APPLICATION = 'my-app'
+        EB_ENVIRONMENT = 'my-app-prod'
+        AWS_CREDENTIALS_ID = 'aws-credentials'
+    }
+    stages {
+        stage('Build') {
+            agent {
+                label 'aws-agent' // AWS EC2 instance configured via Amazon EC2 Plugin
+            }
+            steps {
+                checkout scm
+                sh 'mvn clean package'
+                archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                withAWS(credentials: "${AWS_CREDENTIALS_ID}", region: "${AWS_REGION}") {
+                    sh "aws s3 cp target/my-app.jar s3://${S3_BUCKET}/my-app-${env.BUILD_NUMBER}.jar"
+                }
+            }
+        }
+        stage('Security Scan') {
+            agent { label 'aws-agent' }
+            steps {
+                sh 'mvn verify -Psecurity' // Example security scan
+            }
+        }
+        stage('Blue-Green Deployment') {
+            when { branch 'main' }
+            agent { label 'aws-agent' }
+            steps {
+                withAWS(credentials: "${AWS_CREDENTIALS_ID}", region: "${AWS_REGION}") {
+                    script {
+                        def newEnv = "my-app-prod-green-${env.BUILD_NUMBER}"
+                        echo "Creating new environment: ${newEnv}"
+                        sh """
+                        aws elasticbeanstalk create-environment \
+                            --application-name ${EB_APPLICATION} \
+                            --environment-name ${newEnv} \
+                            --solution-stack-name "64bit Amazon Linux 2 v3.3.13 running Java 11" \
+                            --option-settings Namespace=aws:autoscaling:launchconfiguration,OptionName=InstanceType,Value=t3.micro
+                        """
+                        sh "aws elasticbeanstalk update-environment --environment-name ${newEnv} --version-label my-app-${env.BUILD_NUMBER}"
+                        // Wait for environment to be ready
+                        sh "aws elasticbeanstalk wait environment-exists --environment-name ${newEnv}"
+                        // Swap CNAMEs for blue-green
+                        sh "aws elasticbeanstalk swap-environment-cnames --source-environment-name ${EB_ENVIRONMENT} --destination-environment-name ${newEnv}"
+                        echo "Cleaning up old environment"
+                        sh "aws elasticbeanstalk terminate-environment --environment-name ${EB_ENVIRONMENT}"
+                        // Update environment name for next run
+                        env.EB_ENVIRONMENT = newEnv
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            echo 'Cleaning up'
+            cleanWs()
+        }
+        success {
+            echo 'Notifying success'
+            // Example: Notify Slack
+        }
+        failure {
+            echo 'Notifying failure'
+            // Example: Send email
+        }
+    }
+}
