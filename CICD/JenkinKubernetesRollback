@@ -1,0 +1,50 @@
+pipeline {
+    agent {
+        kubernetes {
+            yaml '''
+            apiVersion: v1
+            kind: Pod
+            spec:
+              containers:
+              - name: kubectl
+                image: bitnami/kubectl:latest
+                command:
+                - sleep
+                args:
+                - infinity
+            '''
+        }
+    }
+    environment {
+        SERVICE_NAME = 'my-app'
+        DOCKER_REGISTRY = 'myregistry.com'
+    }
+    stages {
+        stage('Deploy') {
+            steps {
+                container('kubectl') {
+                    sh """
+                    kubectl set image deployment/${SERVICE_NAME} ${SERVICE_NAME}=${DOCKER_REGISTRY}/${SERVICE_NAME}:${env.BUILD_NUMBER}
+                    kubectl rollout status deployment/${SERVICE_NAME}
+                    """
+                }
+            }
+        }
+        stage('Smoke Test') {
+            steps {
+                sh 'curl -f http://my-app.example.com/health'
+            }
+        }
+    }
+    post {
+        failure {
+            container('kubectl') {
+                echo 'Rolling back deployment'
+                sh "kubectl rollout undo deployment/${SERVICE_NAME}"
+            }
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
