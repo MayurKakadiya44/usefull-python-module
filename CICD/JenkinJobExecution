@@ -1,0 +1,153 @@
+####################################################
+# Execution Order in Declarative Pipeline
+####################################################
+
+pipeline {
+    agent { label 'build-node' }
+    environment {
+        APP_NAME = 'my-app'
+    }
+    stages {
+        stage('Build') {
+            steps {
+                echo "Building ${APP_NAME}"
+                sh 'mvn clean compile'
+            }
+        }
+        stage('Test') {
+            steps {
+                echo 'Running Tests'
+                sh 'mvn test'
+            }
+        }
+        stage('Parallel Tasks') {
+            steps {
+                parallel(
+                    'Unit Tests': {
+                        echo 'Running Unit Tests'
+                        sh './gradlew test'
+                    },
+                    'Lint': {
+                        echo 'Running Lint'
+                        sh 'npm run lint'
+                    }
+                )
+            }
+        }
+        stage('Deploy') {
+            when {
+                branch 'main'
+            }
+            steps {
+                echo 'Deploying to production'
+                sh './deploy.sh'
+            }
+        }
+    }
+    post {
+        always {
+            echo 'Cleaning up'
+            cleanWs()
+        }
+        success {
+            echo 'Pipeline succeeded!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+    }
+}
+
+####################################################
+# Execution Order in Scripted Pipeline
+####################################################
+
+node('build-node') {
+    try {
+        stage('Build') {
+            echo 'Building application'
+            sh 'mvn clean compile'
+        }
+        stage('Test') {
+            echo 'Running tests'
+            sh 'mvn test'
+        }
+        stage('Parallel Tasks') {
+            parallel(
+                'Unit Tests': {
+                    echo 'Running unit tests'
+                    sh './gradlew test'
+                },
+                'Lint': {
+                    echo 'Running lint'
+                    sh 'npm run lint'
+                }
+            )
+        }
+        if (env.BRANCH_NAME == 'main') {
+            stage('Deploy') {
+                echo 'Deploying to production'
+                sh './deploy.sh'
+            }
+        }
+    } catch (Exception e) {
+        echo "Pipeline failed: ${e.message}"
+        throw e
+    } finally {
+        echo 'Cleaning up'
+        sh 'rm -rf target'
+    }
+}
+
+####################################################
+# Execution Order in Scripted Pipeline
+####################################################
+
+node('build-node') {
+    def appName = 'my-app'
+    try {
+        stage('Build') {
+            echo "Building ${appName}"
+            sh 'mvn clean compile'
+        }
+        if (env.BRANCH_NAME == 'main') {
+            stage('Test') {
+                def tasks = [
+                    'Unit Tests': { sh 'mvn test' },
+                    'Lint': { sh 'npm run lint' }
+                ]
+                parallel tasks
+            }
+        }
+        stage('Deploy') {
+            sh './deploy.sh'
+        }
+    } catch (Exception e) {
+        echo "Pipeline failed: ${e.message}"
+        throw e
+    } finally {
+        echo 'Cleaning up'
+        sh 'rm -rf target'
+    }
+}
+
+####################################################
+# Mixing Declarative and Scripted
+####################################################
+
+pipeline {
+    agent { label 'build-node' }
+    stages {
+        stage('Dynamic Tasks') {
+            steps {
+                script {
+                    def tasks = ['task1', 'task2']
+                    for (task in tasks) {
+                        echo "Running ${task}"
+                        sh "run-${task}.sh"
+                    }
+                }
+            }
+        }
+    }
+}
