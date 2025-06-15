@@ -1,0 +1,68 @@
+# Use Case: A pipeline that dynamically generates stages to test a Node.js application on multiple platforms (Linux, Windows, macOS) using different nodes. 
+# It includes custom error handling and dynamic test matrix generation.
+# 
+# Features:
+# Dynamic Stages: Generates parallel test stages for multiple platforms using a Groovy loop and map.
+# Cross-Platform Testing: Runs tests on Linux, Windows, and macOS nodes with platform-specific commands.
+# Stash/Unstash: Shares build artifacts across nodes to avoid redundant builds.
+# Conditional Deployment: Deploys only on the main branch.
+# Error Handling: Uses try-catch at both pipeline and stage levels for granular error reporting.
+# Scripted Flexibility: Leverages Groovy to create a dynamic test matrix.
+# Use Case: Suitable for applications requiring testing across multiple operating systems with dynamic stage generation
+
+def platforms = [
+    [name: 'Linux', label: 'linux-node', command: 'npm test'],
+    [name: 'Windows', label: 'windows-node', command: 'npm run test-windows'],
+    [name: 'macOS', label: 'macos-node', command: 'npm test']
+]
+
+node('build-node') {
+    try {
+        stage('Checkout') {
+            checkout scm
+            stash name: 'source', includes: '**/*'
+        }
+        stage('Build') {
+            unstash 'source'
+            sh 'npm install'
+            sh 'npm run build'
+            stash name: 'build-artifacts', includes: 'dist/**/*, node_modules/**/*'
+        }
+        stage('Test Across Platforms') {
+            def testStages = [:]
+            for (platform in platforms) {
+                def platformName = platform.name
+                def platformLabel = platform.label
+                def platformCommand = platform.command
+                testStages["Test on ${platformName}"] = {
+                    node(platformLabel) {
+                        try {
+                            unstash 'build-artifacts'
+                            echo "Testing on ${platformName}"
+                            sh platformCommand
+                        } catch (Exception e) {
+                            echo "Tests failed on ${platformName}: ${e.message}"
+                            throw e
+                        }
+                    }
+                }
+            }
+            parallel testStages
+        }
+        stage('Deploy') {
+            if (env.BRANCH_NAME == 'main') {
+                unstash 'build-artifacts'
+                echo 'Deploying to production'
+                sh './deploy.sh'
+            } else {
+                echo 'Skipping deployment for non-main branch'
+            }
+        }
+    } catch (Exception e) {
+        echo "Pipeline failed: ${e.message}"
+        throw e
+    } finally {
+        echo 'Cleaning up'
+        sh 'rm -rf dist node_modules'
+    }
+}
