@@ -1,0 +1,88 @@
+def agentType = env.AGENT_TYPE ?: 'docker' // Default to Docker agent
+def agentConfig = [
+    'docker': {
+        return [docker: [image: 'python:3.9', args: '-u root']]
+    },
+    'kubernetes': {
+        return [kubernetes: [yaml: '''
+            apiVersion: v1
+            kind: Pod
+            spec:
+              containers:
+              - name: python
+                image: python:3.9
+                command:
+                - sleep
+                args:
+                - infinity
+            ''']]
+    },
+    'node': {
+        return [label: 'python-node']
+    }
+]
+
+def selectedAgent = agentConfig[agentType]()
+
+node('controller') {
+    try {
+        stage('Checkout') {
+            checkout scm
+            stash name: 'source'
+        }
+        stage('Build and Test') {
+            script {
+                // Dynamically allocate agent
+                if (agentType == 'kubernetes') {
+                    podTemplate(yaml: agentConfig['kubernetes'].kubernetes.yaml) {
+                        node(POD_LABEL) {
+                            container('python') {
+                                unstash 'source'
+                                sh 'pip install -r requirements.txt'
+                                sh 'pytest --junitxml=report.xml'
+                                junit 'report.xml'
+                            }
+                        }
+                    }
+                } else {
+                    agent selectedAgent
+                    unstash 'source'
+                    sh 'pip install -r requirements.txt'
+                    sh 'pytest --junitxml=report.xml'
+                    junit 'report.xml'
+                }
+            }
+        }
+        stage('Manual Approval') {
+            timeout(time: 1, unit: 'DAYS') {
+                input message: 'Approve deployment to production?', submitter: 'admin'
+            }
+        }
+        stage('Deploy') {
+            if (env.BRANCH_NAME == 'main') {
+                agent selectedAgent
+                unstash 'source'
+                sh './deploy.sh'
+            } else {
+                echo 'Skipping deployment for non-main branch'
+            }
+        }
+        stage('Smoke Test') {
+            agent selectedAgent
+            sh './smoke-test.sh'
+        }
+    } catch (Exception e) {
+        echo "Pipeline failed: ${e.message}"
+        stage('Rollback') {
+            if (env.BRANCH_NAME == 'main') {
+                agent selectedAgent
+                echo 'Rolling back deployment'
+                sh './rollback.sh'
+            }
+        }
+        throw e
+    } finally {
+        echo 'Cleaning up'
+        sh 'rm -rf *.xml'
+    }
+}
