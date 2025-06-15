@@ -1,0 +1,167 @@
+- Use the parallel directive in a Jenkinsfile to run multiple jobs concurrently on a single node.
+- Specify a single agent (e.g., label 'build-node' or docker { image 'maven' }) to ensure all tasks run on the same node.
+- Ensure the node has enough executors and resources to handle parallel tasks.
+- Handle errors with try-catch and use failFast to control failure behavior.
+- Clean up the workspace and manage shared resources to avoid conflicts.
+
+#################################################################
+# Running Multiple Jobs in Parallel on a Single Node
+#################################################################
+
+pipeline {
+    agent {
+        label 'build-node' // Run all tasks on a node labeled 'build-node'
+    }
+    stages {
+        stage('Parallel Jobs') {
+            steps {
+                parallel(
+                    "Build": {
+                        echo "Running Build Job"
+                        sh 'mvn clean compile' // Example Maven build
+                    },
+                    "Test": {
+                        echo "Running Test Job"
+                        sh 'mvn test' // Example Maven tests
+                    },
+                    "Lint": {
+                        echo "Running Lint Job"
+                        sh 'npm install && npm run lint' // Example Node.js linting
+                    }
+                )
+            }
+        }
+    }
+    post {
+        always {
+            echo "Cleaning up workspace"
+            cleanWs() // Clean workspace after job completion
+        }
+    }
+}
+
+#################################################################
+#  Parallel Jobs with Stage-Level Agent
+#################################################################
+
+pipeline {
+    agent none // No global agent
+    stages {
+        stage('Setup') {
+            agent { label 'build-node' }
+            steps {
+                echo "Setting up environment"
+                sh 'git clone https://github.com/your-repo/sample-app.git'
+            }
+        }
+        stage('Parallel Tasks') {
+            agent { label 'build-node' } // All parallel tasks run on the same node
+            steps {
+                parallel(
+                    "Unit Tests": {
+                        echo "Running Unit Tests"
+                        sh './gradlew test'
+                    },
+                    "Integration Tests": {
+                        echo "Running Integration Tests"
+                        sh './gradlew integrationTest'
+                    },
+                    "Static Analysis": {
+                        echo "Running Static Analysis"
+                        sh './gradlew checkstyle'
+                    }
+                )
+            }
+        }
+    }
+}
+
+#################################################################
+#  with Docker Agent
+#################################################################
+
+pipeline {
+    agent {
+        docker {
+            image 'maven:3.8-openjdk-11' // Run in a Maven container
+            args '-v /tmp:/tmp' // Optional: Mount volume for caching
+        }
+    }
+    stages {
+        stage('Parallel Jobs') {
+            steps {
+                parallel(
+                    "Compile": {
+                        echo "Compiling Code"
+                        sh 'mvn clean compile'
+                    },
+                    "Test": {
+                        echo "Running Tests"
+                        sh 'mvn test'
+                    },
+                    "Package": {
+                        echo "Packaging Application"
+                        sh 'mvn package -DskipTests'
+                    }
+                )
+            }
+        }
+    }
+}
+
+#################################################################
+#  with Error Handling and FailFast
+#################################################################
+
+pipeline {
+    agent {
+        label 'build-node'
+    }
+    stages {
+        stage('Parallel Execution') {
+            steps {
+                parallel(
+                    "Build": {
+                        try {
+                            echo "Starting Build"
+                            sh 'mvn clean compile'
+                        } catch (Exception e) {
+                            echo "Build failed: ${e.message}"
+                            throw e
+                        }
+                    },
+                    "Test": {
+                        try {
+                            echo "Starting Tests"
+                            sh 'mvn test'
+                        } catch (Exception e) {
+                            echo "Tests failed: ${e.message}"
+                            throw e
+                        }
+                    },
+                    "Lint": {
+                        try {
+                            echo "Starting Lint"
+                            sh 'npm install && npm run lint'
+                        } catch (Exception e) {
+                            echo "Lint failed: ${e.message}"
+                            throw e
+                        }
+                    },
+                    failFast: true // Stop all branches if one fails
+                )
+            }
+        }
+    }
+    post {
+        success {
+            echo "All parallel jobs completed successfully!"
+        }
+        failure {
+            echo "One or more parallel jobs failed."
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
