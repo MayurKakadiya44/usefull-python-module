@@ -1,0 +1,44 @@
+pipeline {
+    agent none
+    stages {
+        stage('Checkout') {
+            agent { label 'build-node' }
+            steps {
+                checkout scm
+                stash name: 'source', includes: '**/*' // Stash all files
+            }
+        }
+        stage('Build and Test') {
+            parallel {
+                stage('Build') {
+                    agent { label 'build-node' }
+                    steps {
+                        unstash 'source' // Retrieve stashed files
+                        sh 'mvn clean package'
+                        stash name: 'artifacts', includes: 'target/*.jar' // Stash build artifacts
+                    }
+                }
+                stage('Test') {
+                    agent { label 'test-node' }
+                    steps {
+                        unstash 'source' // Retrieve source for tests
+                        sh 'mvn test'
+                    }
+                }
+            }
+        }
+        stage('Deploy') {
+            when { branch 'main' }
+            agent { label 'deploy-node' }
+            steps {
+                unstash 'artifacts' // Retrieve build artifacts
+                sh 'deploy.sh target/my-app.jar'
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs() // Clean workspace
+        }
+    }
+}
