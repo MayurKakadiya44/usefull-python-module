@@ -1,216 +1,218 @@
-# Define global variables
+# Define global variables available to all jobs
 variables:
-  PYTHON_VERSION: "3.9"  # Python version for consistency
-  DOCKER_REGISTRY: "registry.gitlab.com/$CI_PROJECT_PATH"  # Docker registry for images
-  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"  # Cache directory for pip
-  TEST_IMAGE: "$CI_REGISTRY_IMAGE:test-$CI_COMMIT_REF_SLUG"  # Dynamic image name
+  PYTHON_VERSION: "3.9"  # Sets the Python version to 3.9 for consistency across jobs
+  DOCKER_REGISTRY: "registry.gitlab.com/$CI_PROJECT_PATH"  # Defines the Docker registry URL using GitLab's predefined variable for the project path
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"  # Specifies the directory to cache pip dependencies
+  TEST_IMAGE: "$CI_REGISTRY_IMAGE:test-$CI_COMMIT_REF_SLUG"  # Defines a dynamic Docker image name with the branch or tag slug
 
-# Define stages for the pipeline
+# Define the stages of the pipeline, executed in order
 stages:
-  - lint
-  - test
-  - build
-  - scan
-  - deploy
-  - review
-  - cleanup
+  - lint  # Stage for code quality checks (e.g., linting)
+  - test  # Stage for running unit and integration tests
+  - build  # Stage for building Docker images
+  - scan  # Stage for security and dependency scanning
+  - deploy  # Stage for deploying to environments (staging/production)
+  - review  # Stage for creating dynamic review apps for merge requests
+  - cleanup  # Stage for cleaning up resources (e.g., old Docker images)
 
-# Cache pip dependencies globally to speed up jobs
+# Cache pip dependencies to speed up jobs by reusing them
 cache:
-  key: "${CI_COMMIT_REF_SLUG}-pip-cache"
+  key: "${CI_COMMIT_REF_SLUG}-pip-cache"  # Unique cache key based on the branch or tag slug
   paths:
-    - $PIP_CACHE_DIR
+    - $PIP_CACHE_DIR  # Cache the pip directory defined in variables
 
-# Default image for jobs unless overridden
-image: python:$PYTHON_VERSION
+# Set the default Docker image for jobs unless overridden
+image: python:$PYTHON_VERSION  # Uses the Python image with the version specified in variables
 
-# Services (e.g., databases for testing)
+# Define services (e.g., databases) available to jobs
 services:
-  - name: postgres:13
-    alias: db
-  - redis:6
+  - name: postgres:13  # Runs a PostgreSQL 13 container for testing
+    alias: db  # Alias for the Postgres service to reference in tests
+  - redis:6  # Runs a Redis 6 container for testing
 
-# Before script to set up Python environment
+# Commands to run before the script section of each job
 before_script:
-  - python --version
-  - pip install --upgrade pip
-  - pip install -r requirements.txt --cache-dir $PIP_CACHE_DIR
+  - python --version  # Prints the Python version for debugging
+  - pip install --upgrade pip  # Upgrades pip to the latest version
+  - pip install -r requirements.txt --cache-dir $PIP_CACHE_DIR  # Installs project dependencies from requirements.txt, using the cache
 
-# Linting job to enforce code quality
+# Job to enforce code quality through linting
 lint_job:
-  stage: lint
+  stage: lint  # Assigns this job to the lint stage
   script:
-    - pip install flake8 black isort
-    - flake8 . --max-line-length=88 --extend-ignore=E203
-    - black --check .
-    - isort --check-only --diff .
+    - pip install flake8 black isort  # Installs linting tools: flake8 (style checker), black (formatter), isort (import sorter)
+    - flake8 . --max-line-length=88 --extend-ignore=E203  # Runs flake8 to check code style with a max line length of 88
+    - black --check .  # Checks if code is formatted correctly with black
+    - isort --check-only --diff .  # Checks if imports are sorted correctly with isort
   rules:
-    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'  # Run on branches and MRs
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'  # Runs this job on any branch or merge request
   tags:
-    - docker  # Run on runners with Docker executor
+    - docker  # Specifies that this job runs on runners with the "docker" tag
 
-# Unit and integration tests with parallel execution
+# Job to run unit and integration tests
 test_job:
-  stage: test
+  stage: test  # Assigns this job to the test stage
   script:
-    - pip install pytest pytest-cov
-    - pytest --cov=./ --cov-report=xml --junitxml=report.xml
+    - pip install pytest pytest-cov  # Installs pytest and pytest-cov for testing and coverage
+    - pytest --cov=./ --cov-report=xml --junitxml=report.xml  # Runs tests, generates coverage in XML, and test report in JUnit format
   artifacts:
-    when: always
+    when: always  # Stores artifacts even if the job fails
     paths:
-      - coverage.xml
-      - report.xml
+      - coverage.xml  # Stores the coverage report file
+      - report.xml  # Stores the test report file
     reports:
-      junit: report.xml
-      cobertura: coverage.xml
-  parallel: 3  # Run tests in 3 parallel instances
-  coverage: '/Total.*?(\d+\.\d+%)/'  # Extract coverage percentage
+      junit: report.xml  # Integrates test report with GitLab’s test reporting
+      cobertura: coverage.xml  # Integrates coverage report with GitLab’s coverage visualization
+  parallel: 3  # Splits the test suite into 3 parallel instances to speed up execution
+  coverage: '/Total.*?(\d+\.\d+%)/'  # Regex to extract coverage percentage for GitLab UI
   rules:
-    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
-  dependencies: []  # No dependencies needed
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'  # Runs on any branch or merge request
+  dependencies: []  # Explicitly specifies no artifact dependencies from previous jobs
   retry:
-    max: 2
+    max: 2  # Retries the job up to 2 times if it fails
     when:
-      - runner_system_failure
-      - stuck_or_timeout_failure
+      - runner_system_failure  # Retry on runner system errors
+      - stuck_or_timeout_failure  # Retry on timeouts or stuck jobs
 
-# Build Docker image for the application
+# Job to build and push a Docker image
 build_docker_job:
-  stage: build
-  image: docker:20.10
+  stage: build  # Assigns this job to the build stage
+  image: docker:20.10  # Uses Docker 20.10 image for building Docker images
   services:
-    - docker:dind  # Docker-in-Docker for building images
+    - docker:dind  # Runs Docker-in-Docker service to enable Docker commands
   variables:
-    DOCKER_TLS_CERTDIR: ""  # Disable TLS for simplicity
+    DOCKER_TLS_CERTDIR: ""  # Disables TLS for Docker-in-Docker for simplicity
   before_script:
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY  # Logs into GitLab’s Docker registry
   script:
-    - docker build -t $TEST_IMAGE .
-    - docker push $TEST_IMAGE
+    - docker build -t $TEST_IMAGE .  # Builds a Docker image with the tag defined in variables
+    - docker push $TEST_IMAGE  # Pushes the image to the GitLab registry
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main" || $CI_MERGE_REQUEST_ID'
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_MERGE_REQUEST_ID'  # Runs on main branch or merge requests
   tags:
-    - docker
+    - docker  # Runs on runners with the "docker" tag
 
-# Security scanning with SAST
+# Job for Static Application Security Testing (SAST)
 sast_job:
-  stage: scan
-  image: python:$PYTHON_VERSION
+  stage: scan  # Assigns this job to the scan stage
+  image: python:$PYTHON_VERSION  # Uses the Python image
   script:
-    - pip install bandit
-    - bandit -r . -f json -o sast-report.json
+    - pip install bandit  # Installs bandit, a Python security linter
+    - bandit -r . -f json -o sast-report.json  # Runs bandit to scan for vulnerabilities, outputs JSON report
   artifacts:
     reports:
-      sast: sast-report.json
+      sast: sast-report.json  # Integrates SAST report with GitLab’s security dashboard
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main" || $CI_MERGE_REQUEST_ID'
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_MERGE_REQUEST_ID'  # Runs on main branch or merge requests
 
-# Dependency scanning
+# Job for dependency vulnerability scanning
 dependency_scanning:
-  stage: scan
-  image: python:$PYTHON_VERSION
+  stage: scan  # Assigns this job to the scan stage
+  image: python:$PYTHON_VERSION  # Uses the Python image
   script:
-    - pip install safety
-    - safety check -r requirements.txt --json > dependency-report.json
+    - pip install safety  # Installs safety, a dependency vulnerability scanner
+    - safety check -r requirements.txt --json > dependency-report.json  # Scans dependencies for vulnerabilities, outputs JSON
   artifacts:
     reports:
-      dependency_scanning: dependency-report.json
+      dependency_scanning: dependency-report.json  # Integrates report with GitLab’s security dashboard
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main" || $CI_MERGE_REQUEST_ID'
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_MERGE_REQUEST_ID'  # Runs on main branch or merge requests
 
-# Deploy to staging environment
+# Job to deploy to staging environment
 deploy_staging:
-  stage: deploy
-  image: docker:20.10
+  stage: deploy  # Assigns this job to the deploy stage
+  image: docker:20.10  # Uses Docker image for deployment commands
   services:
-    - docker:dind
+    - docker:dind  # Runs Docker-in-Docker for Docker commands
   environment:
-    name: staging
-    url: https://staging.example.com
+    name: staging  # Defines the staging environment in GitLab
+    url: https://staging.example.com  # URL for accessing the deployed app
   before_script:
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY  # Logs into GitLab’s Docker registry
   script:
-    - docker pull $TEST_IMAGE
-    - docker tag $TEST_IMAGE $DOCKER_REGISTRY:staging
-    - docker push $DOCKER_REGISTRY:staging
-    - echo "Deploying to staging..."
-    - ssh user@staging.example.com "docker-compose pull && docker-compose up -d"
+    - docker pull $TEST_IMAGE  # Pulls the built Docker image
+    - docker tag $TEST_IMAGE $DOCKER_REGISTRY:staging  # Tags the image for staging
+    - docker push $DOCKER_REGISTRY:staging  # Pushes the tagged image to the registry
+    - echo "Deploying to staging..."  # Prints a message for logging
+    - ssh user@staging.example.com "docker-compose pull && docker-compose up -d"  # Deploys to staging server using Docker Compose
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual  # Manual trigger for staging deployment
+    - if: '$CI_COMMIT_BRANCH == "main"'  # Runs only on the main branch
+      when: manual  # Requires manual trigger in GitLab UI
   tags:
-    - docker
+    - docker  # Runs on runners with the "docker" tag
 
-# Deploy to production with approval
+# Job to deploy to production environment
 deploy_production:
-  stage: deploy
-  image: docker:20.10
+  stage: deploy  # Assigns this job to the deploy stage
+  image: docker:20.10  # Uses Docker image for deployment
   services:
-    - docker:dind
+    - docker:dind  # Runs Docker-in-Docker for Docker commands
   environment:
-    name: production
-    url: https://prod.example.com
+    name: production  # Defines the production environment in GitLab
+    url: https://prod.example.com  # URL for accessing the deployed app
   before_script:
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY  # Logs into GitLab’s Docker registry
   script:
-    - docker pull $TEST_IMAGE
-    - docker tag $TEST_IMAGE $DOCKER_REGISTRY:production
-    - docker push $DOCKER_REGISTRY:production
-    - echo "Deploying to production..."
-    - ssh user@prod.example.com "docker-compose pull && docker-compose up -d"
+    - docker pull $TEST_IMAGE  # Pulls the built Docker image
+    - docker tag $TEST_IMAGE $DOCKER_REGISTRY:production  # Tags the image for production
+    - docker push $DOCKER_REGISTRY:production  # Pushes the tagged image to the registry
+    - echo "Deploying to production..."  # Prints a message for logging
+    - ssh user@prod.example.com "docker-compose pull && docker-compose up -d"  # Deploys to production server using Docker Compose
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual
-      allow_failure: false
+    - if: '$CI_COMMIT_BRANCH == "main"'  # Runs only on the main branch
+      when: manual  # Requires manual trigger in GitLab UI
+      allow_failure: false  # Job must succeed; failure stops the pipeline
   needs:
-    - deploy_staging  # Depends on successful staging deployment
+    - deploy_staging  # Requires successful completion of deploy_staging job
   approvals:
-    required: 2  # Requires 2 approvals before running
+    required: 2  # Requires 2 approvals in GitLab UI before running
+  tags:
+    - docker  # Runs on runners with the "docker" tag
 
-# Dynamic review environment for merge requests
+# Job to create dynamic review apps for merge requests
 review_app:
-  stage: review
+  stage: review  # Assigns this job to the review stage
   environment:
-    name: review/$CI_COMMIT_REF_SLUG
-    url: https://$CI_COMMIT_REF_SLUG.review.example.com
-    on_stop: stop_review_app
+    name: review/$CI_COMMIT_REF_SLUG  # Creates a dynamic environment name based on branch/tag
+    url: https://$CI_COMMIT_REF_SLUG.review.example.com  # URL for the review app
+    on_stop: stop_review_app  # Specifies the job to run when stopping the environment
   script:
-    - echo "Deploying review app for $CI_COMMIT_REF_SLUG..."
-    - ssh user@review.example.com "docker run -d -p 80:80 $TEST_IMAGE"
+    - echo "Deploying review app for $CI_COMMIT_REF_SLUG..."  # Prints a message for logging
+    - ssh user@review.example.com "docker run -d -p 80:80 $TEST_IMAGE"  # Deploys the Docker image as a review app
   rules:
-    - if: '$CI_MERGE_REQUEST_ID'
-      when: always
+    - if: '$CI_MERGE_REQUEST_ID'  # Runs only for merge requests
+      when: always  # Always runs when the rule is met
   tags:
-    - docker
+    - docker  # Runs on runners with the "docker" tag
 
-# Stop review environment
+# Job to stop review apps
 stop_review_app:
-  stage: cleanup
+  stage: cleanup  # Assigns this job to the cleanup stage
   environment:
-    name: review/$CI_COMMIT_REF_SLUG
-    action: stop
+    name: review/$CI_COMMIT_REF_SLUG  # Matches the review app environment
+    action: stop  # Marks this job as stopping the environment
   script:
-    - echo "Stopping review app for $CI_COMMIT_REF_SLUG..."
-    - ssh user@review.example.com "docker stop $(docker ps -q --filter ancestor=$TEST_IMAGE)"
+    - echo "Stopping review app for $CI_COMMIT_REF_SLUG..."  # Prints a message for logging
+    - ssh user@review.example.com "docker stop $(docker ps -q --filter ancestor=$TEST_IMAGE)"  # Stops the Docker container for the review app
   rules:
-    - if: '$CI_MERGE_REQUEST_ID'
-      when: manual
+    - if: '$CI_MERGE_REQUEST_ID'  # Runs only for merge requests
+      when: manual  # Requires manual trigger to stop the review app
   tags:
-    - docker
+    - docker  # Runs on runners with the "docker" tag
 
-# Cleanup job to remove old Docker images
+# Job to clean up old Docker images
 cleanup_job:
-  stage: cleanup
-  image: docker:20.10
+  stage: cleanup  # Assigns this job to the cleanup stage
+  image: docker:20.10  # Uses Docker image for cleanup commands
   services:
-    - docker:dind
+    - docker:dind  # Runs Docker-in-Docker for Docker commands
   before_script:
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY  # Logs into GitLab’s Docker registry
   script:
-    - docker system prune -f
-    - docker rmi $(docker images -q $CI_REGISTRY_IMAGE | uniq) || true
+    - docker system prune -f  # Removes unused Docker objects
+    - docker rmi $(docker images -q $CI_REGISTRY_IMAGE | uniq) || true  # Removes project images, ignores errors if none exist
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual
+    - if: '$CI_COMMIT_BRANCH == "main"'  # Runs only on the main branch
+      when: manual  # Requires manual trigger in GitLab UI
   tags:
-    - docker
+    - docker  # Runs on runners with the "docker" tag
