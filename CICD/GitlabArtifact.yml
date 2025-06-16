@@ -1,0 +1,44 @@
+stages:
+  - build
+  - test
+  - deploy
+
+build_job:
+  stage: build
+  script:
+    - echo "Building application..."
+    - mkdir build_output
+    - echo "Compiled binary content" > build_output/my_app_binary
+    - echo "Build log content" > build_output/build.log
+  artifacts:
+    paths:
+      - build_output/ # Collects all files in this directory
+    expire_in: 1 week # How long to keep artifacts
+
+test_job:
+  stage: test
+  script:
+    - echo "Testing application..."
+    - cat build_output/my_app_binary # Access artifact from build_job
+    - echo "Test results" > test_results.txt
+  dependencies:
+    - build_job # Explicitly states dependency on build_job's artifacts
+  artifacts:
+    paths:
+      - test_results.txt
+    expire_in: 1 day
+
+# Example of caching for dependencies
+install_dependencies:
+  stage: .pre # A special stage that runs before all other stages
+  script:
+    - echo "Installing dependencies..."
+    - npm ci --cache .npm # Using npm's cache directory
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-node-modules # Cache key based on branch name
+    paths:
+      - .npm/ # Directory to cache
+  artifacts:
+    paths:
+      - node_modules/ # If you *must* pass node_modules as an artifact to subsequent jobs
+    when: always # Upload artifacts even if job fails
