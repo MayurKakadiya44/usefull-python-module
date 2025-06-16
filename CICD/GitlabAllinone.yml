@@ -1,0 +1,216 @@
+# Define global variables
+variables:
+  PYTHON_VERSION: "3.9"  # Python version for consistency
+  DOCKER_REGISTRY: "registry.gitlab.com/$CI_PROJECT_PATH"  # Docker registry for images
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"  # Cache directory for pip
+  TEST_IMAGE: "$CI_REGISTRY_IMAGE:test-$CI_COMMIT_REF_SLUG"  # Dynamic image name
+
+# Define stages for the pipeline
+stages:
+  - lint
+  - test
+  - build
+  - scan
+  - deploy
+  - review
+  - cleanup
+
+# Cache pip dependencies globally to speed up jobs
+cache:
+  key: "${CI_COMMIT_REF_SLUG}-pip-cache"
+  paths:
+    - $PIP_CACHE_DIR
+
+# Default image for jobs unless overridden
+image: python:$PYTHON_VERSION
+
+# Services (e.g., databases for testing)
+services:
+  - name: postgres:13
+    alias: db
+  - redis:6
+
+# Before script to set up Python environment
+before_script:
+  - python --version
+  - pip install --upgrade pip
+  - pip install -r requirements.txt --cache-dir $PIP_CACHE_DIR
+
+# Linting job to enforce code quality
+lint_job:
+  stage: lint
+  script:
+    - pip install flake8 black isort
+    - flake8 . --max-line-length=88 --extend-ignore=E203
+    - black --check .
+    - isort --check-only --diff .
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'  # Run on branches and MRs
+  tags:
+    - docker  # Run on runners with Docker executor
+
+# Unit and integration tests with parallel execution
+test_job:
+  stage: test
+  script:
+    - pip install pytest pytest-cov
+    - pytest --cov=./ --cov-report=xml --junitxml=report.xml
+  artifacts:
+    when: always
+    paths:
+      - coverage.xml
+      - report.xml
+    reports:
+      junit: report.xml
+      cobertura: coverage.xml
+  parallel: 3  # Run tests in 3 parallel instances
+  coverage: '/Total.*?(\d+\.\d+%)/'  # Extract coverage percentage
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+  dependencies: []  # No dependencies needed
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+# Build Docker image for the application
+build_docker_job:
+  stage: build
+  image: docker:20.10
+  services:
+    - docker:dind  # Docker-in-Docker for building images
+  variables:
+    DOCKER_TLS_CERTDIR: ""  # Disable TLS for simplicity
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker build -t $TEST_IMAGE .
+    - docker push $TEST_IMAGE
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_MERGE_REQUEST_ID'
+  tags:
+    - docker
+
+# Security scanning with SAST
+sast_job:
+  stage: scan
+  image: python:$PYTHON_VERSION
+  script:
+    - pip install bandit
+    - bandit -r . -f json -o sast-report.json
+  artifacts:
+    reports:
+      sast: sast-report.json
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_MERGE_REQUEST_ID'
+
+# Dependency scanning
+dependency_scanning:
+  stage: scan
+  image: python:$PYTHON_VERSION
+  script:
+    - pip install safety
+    - safety check -r requirements.txt --json > dependency-report.json
+  artifacts:
+    reports:
+      dependency_scanning: dependency-report.json
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_MERGE_REQUEST_ID'
+
+# Deploy to staging environment
+deploy_staging:
+  stage: deploy
+  image: docker:20.10
+  services:
+    - docker:dind
+  environment:
+    name: staging
+    url: https://staging.example.com
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker pull $TEST_IMAGE
+    - docker tag $TEST_IMAGE $DOCKER_REGISTRY:staging
+    - docker push $DOCKER_REGISTRY:staging
+    - echo "Deploying to staging..."
+    - ssh user@staging.example.com "docker-compose pull && docker-compose up -d"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual  # Manual trigger for staging deployment
+  tags:
+    - docker
+
+# Deploy to production with approval
+deploy_production:
+  stage: deploy
+  image: docker:20.10
+  services:
+    - docker:dind
+  environment:
+    name: production
+    url: https://prod.example.com
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker pull $TEST_IMAGE
+    - docker tag $TEST_IMAGE $DOCKER_REGISTRY:production
+    - docker push $DOCKER_REGISTRY:production
+    - echo "Deploying to production..."
+    - ssh user@prod.example.com "docker-compose pull && docker-compose up -d"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+      allow_failure: false
+  needs:
+    - deploy_staging  # Depends on successful staging deployment
+  approvals:
+    required: 2  # Requires 2 approvals before running
+
+# Dynamic review environment for merge requests
+review_app:
+  stage: review
+  environment:
+    name: review/$CI_COMMIT_REF_SLUG
+    url: https://$CI_COMMIT_REF_SLUG.review.example.com
+    on_stop: stop_review_app
+  script:
+    - echo "Deploying review app for $CI_COMMIT_REF_SLUG..."
+    - ssh user@review.example.com "docker run -d -p 80:80 $TEST_IMAGE"
+  rules:
+    - if: '$CI_MERGE_REQUEST_ID'
+      when: always
+  tags:
+    - docker
+
+# Stop review environment
+stop_review_app:
+  stage: cleanup
+  environment:
+    name: review/$CI_COMMIT_REF_SLUG
+    action: stop
+  script:
+    - echo "Stopping review app for $CI_COMMIT_REF_SLUG..."
+    - ssh user@review.example.com "docker stop $(docker ps -q --filter ancestor=$TEST_IMAGE)"
+  rules:
+    - if: '$CI_MERGE_REQUEST_ID'
+      when: manual
+  tags:
+    - docker
+
+# Cleanup job to remove old Docker images
+cleanup_job:
+  stage: cleanup
+  image: docker:20.10
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker system prune -f
+    - docker rmi $(docker images -q $CI_REGISTRY_IMAGE | uniq) || true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  tags:
+    - docker
