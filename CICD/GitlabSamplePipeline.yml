@@ -1,0 +1,44 @@
+#######################################################
+if we dont define stages then all will run parallaly.
+#######################################################
+
+build_job:
+  stage: build
+  script:
+    - echo "Building the application..."
+
+test_job:
+  stage: test
+  script:
+    - echo "Running tests..."
+
+deploy_job:
+  stage: deploy
+  script:
+    - echo "Deploying to production..."
+  environment: production
+
+#######################################################
+Sequential execution
+#######################################################
+
+stages:
+  - build
+  - test
+  - deploy
+
+build_job:
+  stage: build
+  script:
+    - echo "Building the application..."
+
+test_job:
+  stage: test
+  script:
+    - echo "Running tests..."
+
+deploy_job:
+  stage: deploy
+  script:
+    - echo "Deploying to production..."
+  environment: production
