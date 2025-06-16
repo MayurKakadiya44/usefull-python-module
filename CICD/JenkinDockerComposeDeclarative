@@ -1,0 +1,109 @@
+#======================================================
+# docker-compose.yml
+#======================================================
+version: '3.8'
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: myregistry.com/my-app-backend:${BUILD_NUMBER:-latest}
+    depends_on:
+      - db
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://db:3306/appdb
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=secret
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: myregistry.com/my-app-frontend:${BUILD_NUMBER:-latest}
+    ports:
+      - "3000:3000"
+  db:
+    image: mysql:8.0
+    environment:
+      - MYSQL_ROOT_PASSWORD=secret
+      - MYSQL_DATABASE=appdb
+    volumes:
+      - db-data:/var/lib/mysql
+volumes:
+  db-data:
+
+#======================================================
+# deploy.sh : 
+#======================================================
+
+#!/bin/bash
+set -x
+docker-compose -f docker-compose.yml pull
+docker-compose -f docker-compose.yml up -d
+if ! docker-compose -f docker-compose.yml ps | grep -q "Up"; then
+    echo "Deployment failed, containers not running"
+    exit 1
+fi
+echo "Deployment successful"
+
+#======================================================
+# Jenkinsfile : 
+#======================================================
+
+pipeline {
+    agent none
+    environment {
+        DOCKER_REGISTRY = 'myregistry.com'
+        REGISTRY_CREDENTIALS = 'docker-creds'
+        COMPOSE_PROJECT_NAME = 'my-app'
+    }
+    stages {
+        stage('Checkout') {
+            agent { label 'build-node' }
+            steps {
+                checkout scm
+                stash name: 'source', includes: '**/*'
+            }
+        }
+        stage('Build and Test') {
+            agent {
+                docker {
+                    image 'docker:20.10-dind'
+                    args '-v /var/run/docker.sock:/var/run/docker.sock --privileged'
+                }
+            }
+            steps {
+                unstash 'source'
+                withCredentials([usernamePassword(credentialsId: "${REGISTRY_CREDENTIALS}", usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                    sh 'docker login -u $USER -p $PASS $DOCKER_REGISTRY'
+                    sh 'docker-compose -f docker-compose.yml build'
+                    sh 'docker-compose -f docker-compose.yml up -d'
+                    sh 'docker-compose -f docker-compose.yml exec -T backend mvn test'
+                    sh 'docker-compose -f docker-compose.yml exec -T frontend npm test'
+                    sh 'docker-compose -f docker-compose.yml down'
+                    sh "docker-compose -f docker-compose.yml push"
+                    stash name: 'compose-files', includes: 'docker-compose.yml'
+                }
+            }
+        }
+        stage('Deploy Staging') {
+            when { branch 'main' }
+            agent { label 'deploy-node' }
+            steps {
+                unstash 'compose-files'
+                withCredentials([usernamePassword(credentialsId: "${REGISTRY_CREDENTIALS}", usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                    sh 'docker login -u $USER -p $PASS $DOCKER_REGISTRY'
+                    sh './deploy.sh'
+                }
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()
+        }
+        failure {
+            sh 'docker-compose -f docker-compose.yml down || true'
+            echo 'Pipeline failed, cleaned up containers'
+        }
+    }
+}
