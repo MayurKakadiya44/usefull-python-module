@@ -1,0 +1,105 @@
+# Define stages for the pipeline
+stages:
+  - lint  # Stage for code quality checks (runs in parallel)
+  - test  # Stage for running tests (runs in parallel)
+  - build  # Stage for building Docker image (runs sequentially after test)
+  - deploy  # Stage for deployment (runs sequentially after build)
+
+# Cache pip dependencies to speed up jobs
+cache:
+  key: "${CI_COMMIT_REF_SLUG}-pip-cache"  # Unique cache key per branch
+  paths:
+    - .cache/pip  # Cache directory for pip
+
+# Default Docker image for jobs
+image: python:3.9  # Python 3.9 image for consistency
+
+# Linting job (runs in parallel with other lint jobs)
+lint_flake8:
+  stage: lint
+  script:
+    - pip install flake8  # Install linting tool
+    - flake8 . --max-line-length=88  # Check code style
+  tags:
+    - docker  # Run on Docker-capable runner
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'  # Run on branches or MRs
+
+# Another linting job (runs in parallel with lint_flake8)
+lint_black:
+  stage: lint
+  script:
+    - pip install black  # Install formatting tool
+    - black --check .  # Check code formatting
+  tags:
+    - docker
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+# Unit testing job with parallel instances
+unit_test:
+  stage: test
+  script:
+    - pip install pytest pytest-cov  # Install testing tools
+    - pytest tests/unit --cov=./ --cov-report=xml  # Run unit tests
+  artifacts:
+    paths:
+      - coverage.xml  # Store coverage report
+    reports:
+      cobertura: coverage.xml  # Integrate with GitLab UI
+  parallel: 3  # Split into 3 parallel instances
+  tags:
+    - docker
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+# Integration testing job (runs in parallel with unit_test)
+integration_test:
+  stage: test
+  services:
+    - postgres:13  # Run PostgreSQL for integration tests
+  script:
+    - pip install pytest  # Install testing tools
+    - pytest tests/integration  # Run integration tests
+  tags:
+    - docker
+  rules:
+    - if: '$CI_COMMIT_BRANCH || $CI_MERGE_REQUEST_ID'
+
+# Build job (runs sequentially after lint and test stages)
+build_docker_job:
+  stage: build
+  image: docker:20.10  # Docker image for building
+  services:
+    - docker:dind  # Docker-in-Docker for building images
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY  # Log into GitLab registry
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG .  # Build Docker image
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG  # Push to registry
+  tags:
+    - docker
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'  # Run on main branch
+  needs:
+    - lint_flake8  # Wait for specific lint job
+    - lint_black
+    - unit_test
+    - integration_test
+
+# Deploy job (runs sequentially after build)
+deploy_staging:
+  stage: deploy
+  environment:
+    name: staging
+    url: https://staging.example.com
+  script:
+    - echo "Deploying to staging..."
+    - ssh user@staging.example.com "docker pull $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG && docker run -d -p 80:80 $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
+  tags:
+    - docker
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual  # Manual trigger
+  needs:
+    - build_docker_job  # Wait for build job to complete
