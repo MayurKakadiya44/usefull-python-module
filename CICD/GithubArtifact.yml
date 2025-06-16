@@ -1,0 +1,56 @@
+name: Build and Test
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build application
+        run: |
+          echo "Building application..."
+          mkdir -p build_output
+          echo "Compiled binary content" > build_output/my_app_binary
+          echo "Build log content" > build_output/build.log
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: my-application-build
+          path: build_output/ # Uploads the directory
+
+  test:
+    needs: build # This job depends on the 'build' job
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: my-application-build # Downloads the artifact uploaded by the 'build' job
+          path: . # Downloads to the current working directory
+      - name: Run tests
+        run: |
+          echo "Testing application..."
+          cat my_app_binary # Access the downloaded artifact
+          echo "Test results" > test_results.txt
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test_results.txt
+
+  # Example of caching for dependencies
+  install-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm # Path to cache
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }} # Cache key
+          restore-keys: |
+            ${{ runner.os }}-node-
+      - name: Install dependencies
+        run: npm ci
