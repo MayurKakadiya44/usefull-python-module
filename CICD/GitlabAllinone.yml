@@ -7,6 +7,7 @@ variables:
 
 # Define the stages of the pipeline, executed in order
 stages:
+  - scan
   - security
   - lint  # Stage for code quality checks (e.g., linting)
   - test  # Stage for running unit and integration tests
@@ -36,6 +37,15 @@ before_script:
   - python --version  # Prints the Python version for debugging
   - pip install --upgrade pip  # Upgrades pip to the latest version
   - pip install -r requirements.txt --cache-dir $PIP_CACHE_DIR  # Installs project dependencies from requirements.txt, using the cache
+
+sast_job:
+  stage: scan
+  script:
+    - pip install bandit
+    - bandit -r . -f json -o sast-report.json
+  artifacts:
+    reports:
+      sast: sast-report.json
 
 codeql-analysis:
   stage: security
