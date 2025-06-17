@@ -1,0 +1,215 @@
+Optimizations Applied
+Caching: Used actions/cache for Docker layers and PostgreSQL images, and setup-python’s built-in pip caching.
+Faster Tools: Replaced pip with uv for faster dependency installation.
+Conditional Execution: Skipped linting for documentation changes with if: "!contains(github.event.head_commit.message, 'docs:')".
+Matrix Optimization: Ran coverage reports only on Python 3.11 to reduce artifact uploads.
+Shallow Clones: Added fetch-depth: 1 to actions/checkout for faster repository cloning.
+Artifact Retention: Set retention-days: 7 to minimize storage costs.
+Pinned SHAs: Used commit SHAs for all actions to ensure reproducibility and security.
+Combined Steps: Merged linting tool installation and checks into one step to reduce overhead.
+Permission Scoping: Explicitly defined minimal permissions to enhance security.
+Docker BuildKit: Enabled caching with docker/build-push-action for faster Docker builds.
+
+
+
+# Name of the GitHub Actions workflow
+name: Optimized Python CI/CD Pipeline
+
+# Define events that trigger the workflow
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# Restrict permissions to minimize security risks
+permissions:
+  contents: read # Only read access for repository contents
+  packages: write # Write access for GitHub Packages
+  # Explicitly deny unnecessary permissions
+  issues: none
+  pull-requests: none
+
+# Environment variables for all jobs
+env:
+  PYTHON_VERSION: '3.11' # Default Python version
+  REGISTRY: ghcr.io # GitHub Container Registry
+
+# Define jobs
+jobs:
+  # Job for linting (runs only on code changes)
+  lint:
+    name: Lint Codebase
+    runs-on: ubuntu-latest
+    # Optimization: Skip linting for non-code changes (e.g., docs)
+    if: "!contains(github.event.head_commit.message, 'docs:')"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # Pinned SHA for security
+        with:
+          fetch-depth: 1 # Optimization: Shallow clone for faster checkout
+
+      - name: Set up Python
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c # Pinned SHA
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip' # Optimization: Cache pip dependencies
+
+      # Optimization: Combine linting tool installation and checks
+      - name: Run linting checks
+        run: |
+          python -m pip install --upgrade uv # Use uv for faster installs
+          uv pip install flake8 black isort
+          black --check .
+          isort --check-only --diff .
+          flake8 . --max-line-length=88 --extend-ignore=E203
+
+  # Job for unit tests across multiple Python versions
+  unit-tests:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11'] # Parallel testing
+        include:
+          - python-version: '3.11'
+            coverage: true # Run coverage only on latest version
+      fail-fast: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      # Optimization: Use uv for faster dependency installation
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade uv
+          uv pip install -r requirements.txt pytest pytest-cov
+
+      # Optimization: Conditional coverage report to reduce artifact uploads
+      - name: Run unit tests
+        run: |
+          if [[ "${{ matrix.coverage }}" == "true" ]]; then
+            pytest tests/unit/ --cov=./ --cov-report=xml
+          else
+            pytest tests/unit/
+          fi
+
+      # Optimization: Upload coverage only for one matrix job
+      - name: Upload coverage
+        if: matrix.coverage == true
+        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2 # Pinned SHA
+        with:
+          name: unit-coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          retention-days: 7 # Optimization: Short retention period
+
+  # Job for integration tests (self-hosted for speed)
+  integration-tests:
+    name: Integration Tests
+    runs-on: self-hosted # Optimization: Use self-hosted runner for custom setup
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade uv
+          uv pip install -r requirements.txt pytest pytest-cov
+
+      # Optimization: Cache Docker image for test database
+      - name: Cache PostgreSQL Docker image
+        uses: actions/cache@3624ceb22b19599d66676ca37197348ae85d8ba7 # Pinned SHA
+        with:
+          path: ~/.docker/postgres
+          key: postgres-15-${{ runner.os }}-{{ hashFiles('**/Dockerfile') }}
+          restore-keys: postgres-15-${{ runner.os }}-
+
+      - name: Start test database
+        run: docker run -d -p 5432:5432 postgres:15
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+
+      - name: Run integration tests
+        run: pytest tests/integration/ --cov=./ --cov-report=xml
+        env:
+          DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+        with:
+          name: integration-coverage
+          path: coverage.xml
+          retention-days: 7
+
+  # Job for building and deploying
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    needs: [lint, unit-tests, integration-tests]
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 1
+
+      # Optimization: Cache Docker layers
+      - name: Cache Docker layers
+        uses: actions/cache@3624ceb22b19599d66676ca37197348ae85d8ba7
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-buildx-
+
+      - name: Set up Python
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade uv
+          uv pip install -r requirements.txt
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c44206b9017e2a25d4b0a1e5c24e1c4a9c # Pinned SHA
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Optimization: Use BuildKit and cache for faster builds
+      - name: Build and push Docker image
+        uses: docker/build-push-action@4f58ea79222b37b85d8963779d6c8d7a2b8dc9c3 # Pinned SHA
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ github.repository }}:latest
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache
+
+      - name: Deploy to production
+        run: |
+          echo "Deploying to production..."
+          # Replace with your deployment commands
