@@ -1,0 +1,207 @@
+#####################################################
+Configuration File: .gitlab-ci.yml
+#####################################################
+
+stages:
+  - build
+  - test
+  - deploy
+
+# Global cache for node_modules
+cache:
+  key: ${CI_COMMIT_REF_NAME}-node
+  paths:
+    - node_modules/
+
+build_job:
+  stage: build
+  image: node:16
+  script:
+    - npm install
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+
+test_unit:
+  stage: test
+  image: node:16
+  script:
+    - npm test -- --testPathPattern=unit
+  artifacts:
+    reports:
+      junit: test-report-unit.xml
+    expire_in: 1 day
+  parallel: 2  # Run two instances for faster execution
+
+test_integration:
+  stage: test
+  image: node:16
+  script:
+    - npm test -- --testPathPattern=integration
+  artifacts:
+    reports:
+      junit: test-report-integration.xml
+    expire_in: 1 day
+  parallel: 2
+
+deploy_staging:
+  stage: deploy
+  image: amazon/aws-cli
+  environment:
+    name: staging
+    url: https://staging.example.com
+  script:
+    - aws configure set aws_access_key_id $AWS_ACCESS_KEY
+    - aws configure set aws_secret_access_key $AWS_SECRET_KEY
+    - aws s3 cp dist/ s3://my-staging-bucket/ --recursive
+  only:
+    - main
+
+#####################################################
+Configuration File: .github/workflows/ci.yml
+#####################################################
+name: Node.js CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+      - name: Cache node_modules
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ github.ref_name }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-${{ github.ref_name }}-
+      - name: Install dependencies
+        run: npm install
+      - name: Build
+        run: npm run build
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      matrix:
+        test-type: [unit, integration]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+      - name: Cache node_modules
+        uses: actions/cache@v3
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ github.ref_name }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        run: npm install
+      - name: Run tests
+        run: npm test -- --testPathPattern=${{ matrix.test-type }}
+      - name: Upload test report
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-report-${{ matrix.test-type }}
+          path: test-report-${{ matrix.test-type }}.xml
+          retention-days: 1
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: dist
+          path: dist/
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: us-east-1
+      - name: Deploy to S3
+        run: aws s3 cp dist/ s3://my-staging-bucket/ --recursive
+        
+#####################################################
+Configuration File: Jenkinsfile
+#####################################################
+pipeline {
+    agent any
+    environment {
+        AWS_ACCESS_KEY = credentials('aws-access-key')  // Bound to Jenkins credential ID
+        AWS_SECRET_KEY = credentials('aws-secret-key')
+    }
+    stages {
+        stage('Build') {
+            agent { docker { image 'node:16' } }
+            steps {
+                sh 'npm install'
+                sh 'npm run build'
+                stash name: 'dist', includes: 'dist/**'  // Stash build output
+                archiveArtifacts artifacts: 'dist/**', fingerprint: true
+            }
+        }
+        stage('Test') {
+            parallel {
+                stage('Unit Tests') {
+                    agent { docker { image 'node:16' } }
+                    steps {
+                        sh 'npm install --cache=/tmp/npm-cache'  // Cache node_modules
+                        sh 'npm test -- --testPathPattern=unit'
+                        junit 'test-report-unit.xml'
+                    }
+                }
+                stage('Integration Tests') {
+                    agent { docker { image 'node:16' } }
+                    steps {
+                        sh 'npm install --cache=/tmp/npm-cache'
+                        sh 'npm test -- --testPathPattern=integration'
+                        junit 'test-report-integration.xml'
+                    }
+                }
+            }
+        }
+        stage('Deploy') {
+            when {
+                branch 'main'
+            }
+            agent { docker { image 'amazon/aws-cli' } }
+            steps {
+                unstash 'dist'  // Retrieve build output
+                sh '''
+                    aws configure set aws_access_key_id $AWS_ACCESS_KEY
+                    aws configure set aws_secret_access_key $AWS_SECRET_KEY
+                    aws s3 cp dist/ s3://my-staging-bucket/ --recursive
+                '''
+            }
+        }
+    }
+    post {
+        always {
+            cleanWs()  // Clean workspace after pipeline
+        }
+    }
+}
