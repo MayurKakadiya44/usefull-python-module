@@ -1,3 +1,12 @@
+# Define workflow rules to control when the pipeline runs
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'  # Trigger pipeline for pushes to main
+      when: always
+    - if: '$CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'  # Trigger for MRs targeting main
+      when: always
+    - when: never  # Prevent pipeline from running for other events
+
 # Define global variables available to all jobs
 variables:
   PYTHON_VERSION: "3.9"  # Sets the Python version to 3.9 for consistency across jobs
