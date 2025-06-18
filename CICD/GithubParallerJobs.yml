@@ -1,0 +1,212 @@
+Parallel Jobs: lint, unit-tests, and integration-tests run concurrently.
+Matrix Strategy: unit-tests runs across multiple Python versions in parallel.
+Runner Types: Uses a mix of GitHub-hosted runners (ubuntu-latest) and self-hosted runners (Docker and Kubernetes-based, with labels self-hosted,docker,linux and self-hosted,kubernetes,linux).
+Optimizations: Caching, uv, pinned SHAs, shallow clones, and cleanup steps.
+Dependency: build-and-deploy runs only after parallel jobs complete.
+
+
+# Name of the GitHub Actions workflow
+name: Parallel Python CI/CD Pipeline
+
+# Define events that trigger the workflow
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# Restrict permissions for security
+permissions:
+  contents: read
+  packages: write
+  issues: none
+  pull-requests: none
+
+# Environment variables
+env:
+  PYTHON_VERSION: '3.11'
+  REGISTRY: ghcr.io
+
+# Define jobs
+jobs:
+  # Linting job (runs in parallel on GitHub-hosted runner)
+  lint:
+    name: Lint Codebase
+    runs-on: ubuntu-latest # GitHub-hosted runner for lightweight tasks
+    if: "!contains(github.event.head_commit.message, 'docs:')"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 1 # Optimization: Shallow clone
+
+      - name: Set up Python
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip' # Optimization: Cache pip dependencies
+
+      - name: Run linting checks
+        run: |
+          python -m pip install --upgrade uv # Optimization: Use uv for faster installs
+          uv pip install flake8 black isort
+          black --check .
+          isort --check-only --diff .
+          flake8 . --max-line-length=88 --extend-ignore=E203
+
+  # Unit tests job (runs in parallel with matrix on self-hosted Docker runner)
+  unit-tests:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: [self-hosted, docker, linux] # Self-hosted Docker runner
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11'] # Parallel execution across versions
+        include:
+          - python-version: '3.11'
+            coverage: true
+      fail-fast: false # Continue even if one matrix job fails
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade uv
+          uv pip install -r requirements.txt pytest pytest-cov
+
+      - name: Run unit tests
+        run: |
+          if [[ "${{ matrix.coverage }}" == "true" ]]; then
+            pytest tests/unit/ --cov=./ --cov-report=xml
+          else
+            pytest tests/unit/
+          fi
+
+      - name: Upload coverage
+        if: matrix.coverage == true
+        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+        with:
+          name: unit-coverage-${{ matrix.python-version }}
+          retention-days: 7 # Optimization: Short retention period
+
+  # Integration tests job (runs in parallel on self-hosted Kubernetes runner)
+  integration-tests:
+    name: Integration Tests
+    runs-on: [self-hosted, kubernetes, linux] # Self-hosted Kubernetes runner
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade uv
+          uv pip install -r requirements.txt pytest pytest-cov
+
+      - name: Cache PostgreSQL Docker image
+        uses: actions/cache@3624ceb22b19599d66676ca37197348ae85d8ba7
+        with:
+          path: ~/.docker/postgres
+          key: postgres-15-${{ runner.os }}-{{ hashFiles('**/Dockerfile') }}
+          restore-keys: postgres-15-${{ runner.os }}-
+
+      - name: Start test database
+        run: docker run -d -p 5432:5432 postgres:15
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+
+      - name: Run integration tests
+        run: pytest tests/integration/ --cov=./ --cov-report=xml
+        env:
+          DATABASE_URL: postgresql://testuser:testpass@localhost:5432/testdb
+
+      - name: Cleanup Docker
+        if: always() # Ensure cleanup runs even on failure
+        run: |
+          docker ps -q | xargs -n 1 -P 8 -I {} docker stop {}
+          docker system prune -f
+        continue-on-error: true
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2
+        with:
+          name: integration-coverage
+          retention-days: 7
+
+  # Build and deploy job (runs sequentially after parallel jobs)
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: [self-hosted, kubernetes, linux] # Self-hosted Kubernetes runner
+    needs: [lint, unit-tests, integration-tests] # Wait for parallel jobs to complete
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 1
+
+      - name: Cache Docker layers
+        uses: actions/cache@3624ceb22b19599d66676ca37197348ae85d8ba7
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-buildx-
+
+      - name: Set up Python
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade uv
+          uv pip install -r requirements.txt
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c44206b9017e2a25d4b0a1e5c24e1c4a9c
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@4f58ea79222b37b85d8963779d6c8d7a2b8dc9c3
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ github.repository }}:latest
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache
+
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }} # Kubernetes cluster access
+
+      - name: Cleanup Docker
+        if: always()
+        run: |
+          docker ps -q | xargs -n 1 -P 8 -I {} docker stop {}
+          docker system prune -f
+        continue-on-error: true
